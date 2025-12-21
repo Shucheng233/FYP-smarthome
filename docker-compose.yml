@@ -11,9 +11,7 @@ services:
       context: ./services/coordinator
     ports:
       - "8000:8000"
-    environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=llama3.1
+    env_file: ./services/coordinator/.env
     volumes:
       # 你 app.py 里 mount 了 web，所以保留这个
       - ./web:/app/web:ro
