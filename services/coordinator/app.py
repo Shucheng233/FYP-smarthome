@@ -1,47 +1,50 @@
 import os
 import httpx
-from fastapi import FastAPI, HTTPException
+
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-
 from fastapi.responses import FileResponse
-
 from pydantic import BaseModel
 
-#from api.sensor import router as sensor_router
-#from api.iot import router as iot_router
-#from api.stt import router as stt_router
-#from api.tts import router as tts_router
+from llm_iot_extractor import LLMIoTExtractor
+
 
 # LLM API Mode: "local" (Ollama) or "remote" (e.g., OpenAI, Claude, etc.)
-LLM_API_MODE = os.getenv("LLM_API_MODE")
+LLM_API_MODE = os.getenv("LLM_API_MODE", "").strip().lower()
+
 # Ollama settings (local LLM)
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "").strip()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
 
 # Remote LLM API settings
-REMOTE_LLM_API_KEY = os.getenv("REMOTE_LLM_API_KEY")
-REMOTE_LLM_API_URL = os.getenv("REMOTE_LLM_API_URL")
-REMOTE_LLM_MODEL = os.getenv("REMOTE_LLM_MODEL")
+REMOTE_LLM_API_KEY = os.getenv("REMOTE_LLM_API_KEY", "").strip()
+REMOTE_LLM_API_URL = os.getenv("REMOTE_LLM_API_URL", "").strip()
+REMOTE_LLM_MODEL = os.getenv("REMOTE_LLM_MODEL", "").strip()
 
-# TODO: Add system prompt for IoT command generation
 
-app = FastAPI(title="FYP Coordinator", version="0.2.0")
+app = FastAPI(title="FYP Coordinator", version="0.3.0")
 
 # Mount static files for web dashboard
 app.mount("/static", StaticFiles(directory="web"), name="web")
 
-# --- API Routers ---
-#app.include_router(sensor_router)
-#app.include_router(iot_router)
-#app.include_router(stt_router)
-#app.include_router(tts_router)
 
 class IoTCommandRequest(BaseModel):
     prompt: str
 
+
+# 初始化 extractor
+try:
+    extractor = LLMIoTExtractor()
+except Exception as e:
+    extractor = None
+    print(f"[startup] failed to initialize LLMIoTExtractor: {e}")
+
+
 @app.get("/")
 def root():
     return FileResponse("web/index.html", media_type="text/html")
+
 
 @app.get("/health", tags=["health"])
 def health():
@@ -52,48 +55,63 @@ def health():
         "ollama_base_url": OLLAMA_BASE_URL if LLM_API_MODE == "local" else None,
         "ollama_model": OLLAMA_MODEL if LLM_API_MODE == "local" else None,
         "remote_llm_model": REMOTE_LLM_MODEL if LLM_API_MODE == "remote" else None,
+        "extractor_ready": extractor is not None,
     }
+
 
 @app.post("/iot/command", tags=["iot"])
 def iot_command(req: IoTCommandRequest):
-    # TODO: Implement with system prompt
-    if LLM_API_MODE == "local":
-        # Use local Ollama
-        payload = {"model": OLLAMA_MODEL, "prompt": f"Parse this into IoT commands: {req.prompt}", "stream": False}
-        try:
-            r = httpx.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload, timeout=120)
-            r.raise_for_status()
-            data = r.json()
-            response = data.get("response", "")
-            # TODO: Parse JSON response
-            return {"response": response, "raw": data}
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Ollama error: {str(e)}")
-    elif LLM_API_MODE == "remote":
-        # Use remote LLM API
-        try:
-            headers = {"Authorization": f"Bearer {REMOTE_LLM_API_KEY}"}
-            payload = {
-                "model": REMOTE_LLM_MODEL,
-                "messages": [{"role": "user", "content": f"Parse this into IoT commands: {req.prompt}"}],
-            }
-            r = httpx.post(REMOTE_LLM_API_URL, json=payload, headers=headers, timeout=120)
-            r.raise_for_status()
-            data = r.json()
-            response = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            # TODO: Parse JSON response
-            return {"response": response, "raw": data}
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Remote LLM error: {str(e)}")
-    else:
-        raise HTTPException(status_code=400, detail=f"LLM_API_MODE not configured: {LLM_API_MODE}. Please set LLM_API_MODE in environment variables.")
+    """
+    Convert natural-language smart-home input into validated JSON commands.
+    """
+    if extractor is None:
+        raise HTTPException(
+            status_code=500,
+            detail="LLM extractor is not initialized. Check startup logs, .env, and iot_command_format_v3.md.",
+        )
+
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
+
+    try:
+        commands = extractor.extract(prompt)
+        return {
+            "prompt": prompt,
+            "commands": commands,
+            "count": len(commands),
+            "llm_api_mode": LLM_API_MODE,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"IoT command extraction failed: {str(e)}")
+
 
 # Keep old /llm for compatibility
 @app.post("/llm", tags=["llm"])
 def llm(req: IoTCommandRequest):
-    # For backward compatibility, treat as IoT command
+    # For backward compatibility, treat as IoT command extraction
     return iot_command(req)
+
 
 # --- Web (Dashboard) ---
 # 把 coordinator/web 当成静态资源目录（index.html/app.js/style.css）
 
+@app.websocket("/ws/device")
+async def websocket_device(websocket: WebSocket):
+    await websocket.accept()
+    client = websocket.client
+    print(f"[{datetime.now()}] device connected: {client}")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            print(f"[{datetime.now()}] received from device: {data}")
+
+            reply = f"ack: {data}"
+            await websocket.send_text(reply)
+            print(f"[{datetime.now()}] sent to device: {reply}")
+
+    except WebSocketDisconnect:
+        print(f"[{datetime.now()}] device disconnected: {client}")
+    except Exception as e:
+        print(f"[{datetime.now()}] websocket error: {e}")

@@ -1,22 +1,12 @@
 services:
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-
   coordinator:
     build:
       context: ./services/coordinator
+    container_name: fyp-coordinator
     ports:
-      - "8000:8000"
-    env_file: ./services/coordinator/.env
+      - "8001:8000"
+    env_file:
+      - ./services/coordinator/.env
     volumes:
-      # 你 app.py 里 mount 了 web，所以保留这个
       - ./web:/app/web:ro
-    depends_on:
-      - ollama
-
-volumes:
-  ollama_data:
+    restart: unless-stopped

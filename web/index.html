@@ -3,71 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>FYP Smarthome - Dashboard</title>
+  <title>FYP Smarthome - IoT Command</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <header class="topbar">
-    <h1>FYP Smarthome - Dashboard</h1>
+    <h1>FYP Smarthome - IoT Command</h1>
     <div class="status" id="sysStatus">System: Loading...</div>
   </header>
 
   <main class="grid">
-    <!-- LLM Panel -->
-    <section class="card">
-      <h2>LLM Service</h2>
-      <label>Prompt</label>
-      <textarea id="llmPrompt" rows="4" placeholder="Enter your prompt here...">Hello, how are you?</textarea>
-      <div class="row">
-        <button id="btnLlm">Test LLM</button>
-        <button class="secondary" id="btnLlmClear">Clear</button>
-      </div>
-      <pre class="output" id="llmOut">Response will appear here...</pre>
-    </section>
-
-    <!-- Health Check Panel -->
-    <section class="card">
-      <h2>Service Health</h2>
-      <div class="row">
-        <button id="btnHealth">Check Health</button>
-      </div>
-      <pre class="output" id="healthOut">...</pre>
-    </section>
-
-    <!-- Sensors Panel -->
-    <section class="card">
-      <h2>Sensors (Mock)</h2>
-      <div class="kv">
-        <div>Temperature</div><div id="tVal">-</div>
-        <div>Humidity</div><div id="hVal">-</div>
-        <div>CO₂</div><div id="cVal">-</div>
-      </div>
-      <div class="row">
-        <button id="btnSensorRefresh">Refresh</button>
-      </div>
-      <pre class="output" id="sensorOut">Mock data - API not implemented</pre>
-    </section>
-
-    <!-- IoT Command Panel -->
     <section class="card">
       <h2>IoT Command</h2>
       <label>Natural Language Input</label>
-      <textarea id="iotPrompt" rows="4" placeholder="e.g., Turn on the lights in living room">Turn on the lights</textarea>
+      <textarea id="iotPrompt" rows="5" placeholder="e.g., Turn on the lights">Turn on the lights</textarea>
       <div class="row">
         <button id="btnIot">Generate Commands</button>
         <button class="secondary" id="btnIotClear">Clear</button>
       </div>
-      <pre class="output" id="iotOut">Commands will appear here...</pre>
-    </section>
 
-    <!-- STT / TTS Panel -->
-    <section class="card">
-      <h2>STT / TTS (Mock)</h2>
-      <div class="row">
-        <button id="btnSttStatus">STT Status</button>
-        <button id="btnTtsStatus">TTS Status</button>
-      </div>
-      <pre class="output" id="sttTtsOut">Not implemented yet</pre>
+      <h3>Parsed Commands</h3>
+      <pre class="output" id="iotOut">Commands will appear here...</pre>
     </section>
   </main>
 
