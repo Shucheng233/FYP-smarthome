@@ -2,28 +2,57 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>FYP Smarthome - IoT Command</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FYP Smart Home Test Dashboard</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <header class="topbar">
-    <h1>FYP Smarthome - IoT Command</h1>
-    <div class="status" id="sysStatus">System: Loading...</div>
+    <div>
+      <h1>FYP Smart Home Test Dashboard</h1>
+      <p>Natural-language control, live ESP32 ACK, state monitor, and test log collection.</p>
+    </div>
+    <div class="status-row">
+      <span id="apiStatus" class="pill grey">API checking</span>
+      <span id="deviceStatus" class="pill grey">ESP32 checking</span>
+      <span id="dashStatus" class="pill grey">Dashboard WS checking</span>
+    </div>
   </header>
 
-  <main class="grid">
-    <section class="card">
-      <h2>IoT Command</h2>
-      <label>Natural Language Input</label>
-      <textarea id="iotPrompt" rows="5" placeholder="e.g., Turn on the lights">Turn on the lights</textarea>
-      <div class="row">
-        <button id="btnIot">Generate Commands</button>
-        <button class="secondary" id="btnIotClear">Clear</button>
+  <main class="layout">
+    <section class="card command-card">
+      <h2>Command Input</h2>
+      <textarea id="promptInput" rows="3" placeholder="Example: Set the living room light brightness to 40%"></textarea>
+      <div class="button-row">
+        <button id="sendBtn">Send Command</button>
+        <button id="clearPromptBtn" class="secondary">Clear</button>
       </div>
+      <h3>Last Parsed Command</h3>
+      <pre id="commandOutput" class="json-box">No command yet.</pre>
+    </section>
 
-      <h3>Parsed Commands</h3>
-      <pre class="output" id="iotOut">Commands will appear here...</pre>
+    <section class="card">
+      <h2>Quick Tests</h2>
+      <div id="quickTests" class="quick-grid"></div>
+    </section>
+
+    <section class="card full-width">
+      <h2>Device State</h2>
+      <div id="stateGrid" class="state-grid">
+        <div class="empty">Waiting for ESP32 state...</div>
+      </div>
+    </section>
+
+    <section class="card full-width">
+      <div class="section-title-row">
+        <h2>Live System Log</h2>
+        <div class="button-row compact">
+          <button id="copyLogBtn" class="secondary">Copy logs</button>
+          <button id="downloadLogBtn" class="secondary">Download logs</button>
+          <button id="clearLogBtn" class="danger">Clear view</button>
+        </div>
+      </div>
+      <div id="logPanel" class="log-panel"></div>
     </section>
   </main>
 

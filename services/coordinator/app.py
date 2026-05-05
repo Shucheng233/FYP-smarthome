@@ -1,37 +1,24 @@
-import os
+import asyncio
 import json
-import httpx
-
+import os
+from collections import deque
 from datetime import datetime
-from typing import List
+from typing import Any, Deque, Dict, List
+
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from llm_iot_extractor import LLMIoTExtractor
 
 
-# =====================================================
-# 一、LLM 配置
-# =====================================================
-
-# LLM API Mode: "local" (Ollama) or "remote" (e.g., OpenAI, Claude, etc.)
 LLM_API_MODE = os.getenv("LLM_API_MODE", "").strip().lower()
-
-# Ollama settings (local LLM)
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "").strip()
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
-
-# Remote LLM API settings
-REMOTE_LLM_API_KEY = os.getenv("REMOTE_LLM_API_KEY", "").strip()
-REMOTE_LLM_API_URL = os.getenv("REMOTE_LLM_API_URL", "").strip()
 REMOTE_LLM_MODEL = os.getenv("REMOTE_LLM_MODEL", "").strip()
 
-
-app = FastAPI(title="FYP Coordinator", version="0.4.0")
-
-# Mount static files for web dashboard
+app = FastAPI(title="FYP Coordinator", version="0.5.0")
 app.mount("/static", StaticFiles(directory="web"), name="web")
 
 
@@ -39,18 +26,12 @@ class IoTCommandRequest(BaseModel):
     prompt: str
 
 
-# =====================================================
-# 二、全局：保存已连接的 ESP32 WebSocket
-# =====================================================
-# 改动功能：
-# 1. 以前 /ws/device 只是收到消息就 reply
-# 2. 现在把连接保存起来，后面 /iot/command 可以主动发命令给 ESP32
 connected_devices: List[WebSocket] = []
+dashboard_clients: List[WebSocket] = []
+EVENT_LOG: Deque[Dict[str, Any]] = deque(maxlen=500)
+LAST_DEVICE_STATE: Dict[str, Any] = {}
 
 
-# =====================================================
-# 三、初始化 extractor
-# =====================================================
 try:
     extractor = LLMIoTExtractor()
 except Exception as e:
@@ -58,41 +39,81 @@ except Exception as e:
     print(f"[startup] failed to initialize LLMIoTExtractor: {e}")
 
 
-# =====================================================
-# 四、工具函数：广播 commands 到已连接设备
-# =====================================================
-async def broadcast_commands_to_devices(commands):
-    """
-    把解析后的 commands 广播给所有已连接的 ESP32。
-    当前发送格式：直接发送 JSON 数组
-    因为你现在 ESP32 代码已经兼容 JSON 数组格式。
-    """
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def add_event(source: str, level: str, message: str, data: Any = None) -> Dict[str, Any]:
+    event = {
+        "time": now_iso(),
+        "source": source,
+        "level": level,
+        "message": message,
+        "data": data,
+    }
+    EVENT_LOG.append(event)
+    print(f"[{event['time']}] [{source}] [{level}] {message}")
+    if data is not None:
+        print(f"[{event['time']}] [{source}] data: {data}")
+    return event
+
+
+async def broadcast_dashboard(payload: Dict[str, Any]) -> None:
+    if not dashboard_clients:
+        return
+
+    text = json.dumps(payload, ensure_ascii=False)
+    dead_clients: List[WebSocket] = []
+
+    for ws in dashboard_clients:
+        try:
+            await ws.send_text(text)
+        except Exception:
+            dead_clients.append(ws)
+
+    for ws in dead_clients:
+        if ws in dashboard_clients:
+            dashboard_clients.remove(ws)
+
+
+async def push_event(source: str, level: str, message: str, data: Any = None) -> Dict[str, Any]:
+    event = add_event(source, level, message, data)
+    await broadcast_dashboard({"type": "event", "event": event})
+    return event
+
+
+def update_state_from_device_payload(payload: Dict[str, Any]) -> None:
+    state = payload.get("state")
+    if isinstance(state, dict):
+        LAST_DEVICE_STATE.clear()
+        LAST_DEVICE_STATE.update(state)
+
+
+async def broadcast_commands_to_devices(commands: List[Dict[str, Any]]) -> int:
     if not connected_devices:
-        print(f"[{datetime.now()}] [WS] no connected device, skip sending")
+        await push_event("WS", "WARN", "No connected ESP32 device. Command was not sent.", commands)
         return 0
 
     message = json.dumps(commands, ensure_ascii=False)
-    dead_connections = []
+    dead_connections: List[WebSocket] = []
+    sent_count = 0
 
     for ws in connected_devices:
         try:
             await ws.send_text(message)
-            print(f"[{datetime.now()}] [WS] sent commands to device: {message}")
+            sent_count += 1
+            await push_event("WS", "INFO", "Sent command array to ESP32", commands)
         except Exception as e:
-            print(f"[{datetime.now()}] [WS] failed to send to device: {e}")
             dead_connections.append(ws)
+            await push_event("WS", "ERROR", f"Failed to send command to ESP32: {e}")
 
-    # 清理失效连接
     for ws in dead_connections:
         if ws in connected_devices:
             connected_devices.remove(ws)
 
-    return len(connected_devices)
+    return sent_count
 
 
-# =====================================================
-# 五、基础接口
-# =====================================================
 @app.get("/")
 def root():
     return FileResponse("web/index.html", media_type="text/html")
@@ -108,21 +129,24 @@ def health():
         "ollama_model": OLLAMA_MODEL if LLM_API_MODE == "local" else None,
         "remote_llm_model": REMOTE_LLM_MODEL if LLM_API_MODE == "remote" else None,
         "extractor_ready": extractor is not None,
-        "connected_devices": len(connected_devices),  # 改动功能：health 里能直接看到当前设备连接数
+        "connected_devices": len(connected_devices),
+        "dashboard_clients": len(dashboard_clients),
+        "event_count": len(EVENT_LOG),
     }
 
 
-# =====================================================
-# 六、IoT Command 接口
-# =====================================================
+@app.get("/events", tags=["dashboard"])
+def events():
+    return {"events": list(EVENT_LOG)}
+
+
+@app.get("/device/state", tags=["dashboard"])
+def device_state():
+    return {"state": LAST_DEVICE_STATE}
+
+
 @app.post("/iot/command", tags=["iot"])
 async def iot_command(req: IoTCommandRequest):
-    """
-    Convert natural-language smart-home input into validated JSON commands.
-    改动功能：
-    1. 以前这里只返回 commands 给网页
-    2. 现在会在返回网页的同时，把 commands 发给 ESP32
-    """
     if extractor is None:
         raise HTTPException(
             status_code=500,
@@ -134,66 +158,94 @@ async def iot_command(req: IoTCommandRequest):
         raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
 
     try:
-        # 第一步：LLM 提取 JSON commands
+        await push_event("WEB", "INFO", f"Prompt received: {prompt}")
         commands = extractor.extract(prompt)
-
-        print(f"[{datetime.now()}] [IOT] prompt: {prompt}")
-        print(f"[{datetime.now()}] [IOT] extracted commands: {commands}")
-
-        # 第二步：把 commands 发给已连接设备
+        await push_event("IOT", "INFO", "Extracted validated commands", commands)
         sent_to = await broadcast_commands_to_devices(commands)
 
-        # 第三步：继续返回给网页显示
-        return {
+        response = {
             "prompt": prompt,
             "commands": commands,
             "count": len(commands),
             "llm_api_mode": LLM_API_MODE,
-            "sent_to_devices": sent_to,   # 改动功能：网页返回里能看到发给了几个设备
+            "sent_to_devices": sent_to,
         }
+        await broadcast_dashboard({"type": "command_response", "response": response})
+        return response
 
     except Exception as e:
+        await push_event("IOT", "ERROR", f"IoT command extraction failed: {e}")
         raise HTTPException(status_code=502, detail=f"IoT command extraction failed: {str(e)}")
 
 
-# Keep old /llm for compatibility
 @app.post("/llm", tags=["llm"])
 async def llm(req: IoTCommandRequest):
-    # For backward compatibility, treat as IoT command extraction
     return await iot_command(req)
 
 
-# =====================================================
-# 七、设备 WebSocket
-# =====================================================
+@app.websocket("/ws/dashboard")
+async def websocket_dashboard(websocket: WebSocket):
+    await websocket.accept()
+    dashboard_clients.append(websocket)
+
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "snapshot",
+                "health": health(),
+                "events": list(EVENT_LOG),
+                "state": LAST_DEVICE_STATE,
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    try:
+        while True:
+            # Keep the connection open. Browser can send ping text if needed.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        if websocket in dashboard_clients:
+            dashboard_clients.remove(websocket)
+    except Exception:
+        if websocket in dashboard_clients:
+            dashboard_clients.remove(websocket)
+
+
 @app.websocket("/ws/device")
 async def websocket_device(websocket: WebSocket):
     await websocket.accept()
     client = websocket.client
-
-    # 改动功能：保存连接
     connected_devices.append(websocket)
-    print(f"[{datetime.now()}] [WS] device connected: {client}")
-    print(f"[{datetime.now()}] [WS] connected device count: {len(connected_devices)}")
+
+    await push_event("WS", "INFO", f"ESP32 connected: {client}")
+    await broadcast_dashboard({"type": "health", "health": health()})
 
     try:
         while True:
             data = await websocket.receive_text()
-            print(f"[{datetime.now()}] [WS] received from device: {data}")
 
-            # 保留你原来的 hello -> ack 兼容逻辑
-            reply = f"ack: {data}"
-            await websocket.send_text(reply)
-            print(f"[{datetime.now()}] [WS] sent to device: {reply}")
+            try:
+                payload = json.loads(data)
+                update_state_from_device_payload(payload)
+                await push_event("ESP32", "INFO", "Message received from ESP32", payload)
+                await broadcast_dashboard({"type": "device_message", "message": payload})
+                if LAST_DEVICE_STATE:
+                    await broadcast_dashboard({"type": "state", "state": LAST_DEVICE_STATE})
+            except json.JSONDecodeError:
+                await push_event("ESP32", "INFO", f"Text received from ESP32: {data}")
+
+            # Keep compatibility with current ESP32 code. ESP32 ignores text starting with ack:.
+            await websocket.send_text(f"ack: {data}")
 
     except WebSocketDisconnect:
-        print(f"[{datetime.now()}] [WS] device disconnected: {client}")
+        await push_event("WS", "WARN", f"ESP32 disconnected: {client}")
         if websocket in connected_devices:
             connected_devices.remove(websocket)
-        print(f"[{datetime.now()}] [WS] connected device count: {len(connected_devices)}")
+        await broadcast_dashboard({"type": "health", "health": health()})
 
     except Exception as e:
-        print(f"[{datetime.now()}] [WS] websocket error: {e}")
+        await push_event("WS", "ERROR", f"ESP32 websocket error: {e}")
         if websocket in connected_devices:
             connected_devices.remove(websocket)
-        print(f"[{datetime.now()}] [WS] connected device count: {len(connected_devices)}")
+        await broadcast_dashboard({"type": "health", "health": health()})
